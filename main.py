@@ -20,7 +20,6 @@ import ffmpeg
 
 st.set_page_config(layout="wide")
 
-print("HI")
 # Function to summarize text using OpenAI API
 def summarize_text_with_openai_api(text, pro):
     client = openai.OpenAI(
@@ -112,9 +111,7 @@ with right_col:
                         for i in frame:
                             frame_avg += i
                         frame_avg /= len(frame)
-                        print(frame_avg)
                         if frame_avg < 90:
-                            print('here')
                             silent_counter += 1
                         else:
                             silent_counter = 0
