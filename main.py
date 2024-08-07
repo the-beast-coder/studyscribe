@@ -18,6 +18,7 @@ from pydub import AudioSegment
 
 st.set_page_config(layout="wide")
 
+print("HI")
 # Function to summarize text using OpenAI API
 def summarize_text_with_openai_api(text, pro):
     client = openai.OpenAI(
