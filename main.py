@@ -1,9 +1,20 @@
 import streamlit as st
+import time
 import asyncio
 import openai
-import speech_recognition as sr
+from io import BytesIO
 import keys
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
+import queue
+import threading
+import tempfile
+import os
+import speech_recognition as sr
+import numpy as np
+from pydub import AudioSegment
 
 st.set_page_config(layout="wide")
 
@@ -32,28 +43,11 @@ recognizer = sr.Recognizer()
 # Streamlit UI Setup
 if 'transcriptions' not in st.session_state:
     st.session_state['transcriptions'] = []
-    st.session_state['run'] = False
     st.session_state['action'] = None
 
-title_alignment="""
-<style>
-.st-emotion-cache-10trblm {
-  text-align: center !important;
-  margin-left: 0;
-}
-</style> """
+# Streamlit UI Setup
+# ... (keep the CSS styles as they were) ...
 
-vertical_line_css = """
-<style>
-.vertical-line {
-    border-left: 2px solid #000;
-    height: 500px;
-}
-</style>
-"""
-
-st.markdown(vertical_line_css, unsafe_allow_html=True)
-st.markdown(title_alignment, unsafe_allow_html=True)
 st.title('StudyScribe')
 
 # Split the layout into two columns
@@ -62,7 +56,7 @@ left_col, middle_col, right_col = st.columns([1, 0.05, 2])
 # Right Column Layout
 notes_placeholder = st.empty()
 with middle_col:
-    st.markdown('<div class="vertical-line"></div>', unsafe_allow_html=True)  # This column will display as a vertical line
+    st.markdown('<div class="vertical-line"></div>', unsafe_allow_html=True)
 
 # Left Column Layout for actions
 with left_col:
@@ -86,50 +80,116 @@ with left_col:
             notes_placeholder.markdown("No transcription to summarize")
 
 with right_col:
-    start, stop = st.columns(2)
-    start.button('Start listening', on_click=lambda: start_listening(), use_container_width=True)
-    stop.button('Stop listening', on_click=lambda: stop_listening(), use_container_width=True)
+    # WebRTC setup
+    audio_buffer = queue.Queue()
+
+    def audio_frame_callback(frame):
+        audio_buffer.put(frame.to_ndarray().tobytes())
+
+    webrtc_ctx = webrtc_streamer(
+        key="speech-to-text",
+        mode=WebRtcMode.SENDONLY,
+        audio_frame_callback=audio_frame_callback,
+        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+        media_stream_constraints={"video": False, "audio": True},
+    )
+
+    transcription_queue = queue.Queue()
+
+    def transcribe_audio():
+        while True:
+            if webrtc_ctx.state.playing:
+                frames = []
+                silent_counter = 0
+                while silent_counter < 10:  # Collect about 1 second of audio
+                    try:
+                        frame = audio_buffer.get(timeout=0.1)
+                        frames.append(frame)
+                        frame_avg = 0
+                        for i in frame:
+                            frame_avg += i
+                        frame_avg /= len(frame)
+                        print(frame_avg)
+                        if frame_avg < 90:
+                            print('here')
+                            silent_counter += 1
+                        else:
+                            silent_counter = 0
+                    except queue.Empty:
+                        break
+
+                if len(frames) > 0:
+                    audio_data = []
+                    for frame in frames:
+                        audio_data += frame
+                    audio_segment = AudioSegment(
+                        bytes(audio_data),
+                        frame_rate=44100,
+                        sample_width=4,
+                        channels=1
+                    )
+
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio_file:
+                        audio_segment.set_frame_rate(16000)
+                        audio_segment.export(temp_audio_file.name, format="wav")
+                        
+                        with sr.AudioFile(temp_audio_file.name) as source:
+                            recognizer.adjust_for_ambient_noise(source)
+                            audio_content = recognizer.record(source)
+                            try:
+                                transcription = recognizer.recognize_google(audio_content)
+                                if transcription:
+                                    transcription_queue.put(transcription)
+                            except sr.UnknownValueError:
+                                pass
+                            except sr.RequestError as e:
+                                st.error(f"Could not request results; {e}")
+                    
+                    os.unlink(temp_audio_file.name)
+            else:
+                break
+
+    # Start transcription in a separate thread
+    thread = threading.Thread(target=transcribe_audio, daemon=True).start()
+    add_script_run_ctx(thread)
+
+    def update_transcriptions():
+        while not transcription_queue.empty():
+            transcription = transcription_queue.get()
+            st.session_state['transcriptions'].append(transcription)
+        # Update the transcription area
+        trp.markdown(r"<div class='scrollable-container'>" + "<br>".join(f"{i+1}: {t}" for i, t in enumerate(st.session_state['transcriptions'])) + r"<style> .scrollable-container {height: 400px; overflow-y: auto;}</style> </div>", unsafe_allow_html=True)
 
     # Transcription area with a scrollbar
     trp = st.markdown(r"<div class='scrollable-container'>" + "<br>".join(f"{i+1}: {t}" for i, t in enumerate(st.session_state['transcriptions'])) + r"<style> .scrollable-container {height: 400px; overflow-y: auto;}</style> </div>", unsafe_allow_html=True)
-    # Placeholder for displaying the current partial or final transcription
-    current_transcription_placeholder = st.empty()
 
     # Buttons in the bottom 1/3 of the right column
     with st.container():
         get_notes, _, get_practice = st.columns(3)
         if get_notes.button('Get Notes', key='1'):
             st.session_state['action'] = 'notes'
-            # Get the last transcription
-            if st.session_state['transcriptions']:
-                last_transcription = st.session_state['transcriptions'][-1]
 
         if get_practice.button('Get Practice Questions', key='3'):
             st.session_state['action'] = 'practice'
 
-# Functions to handle start and stop listening
-def start_listening():
-    st.session_state['run'] = True
-    asyncio.run(transcribe_audio())
-
-def stop_listening():
-    st.session_state['run'] = False
-
-async def transcribe_audio():
-    with sr.Microphone() as source:
-        recognizer.adjust_for_ambient_noise(source)
-        while st.session_state['run']:
+    # File uploader for audio files
+    uploaded_file = st.file_uploader("Upload a WAV/MP3 file", type=["wav", "mp3"])
+    if uploaded_file is not None:
+        audio_data = uploaded_file.read()
+        audio = sr.AudioFile(BytesIO(audio_data))
+        with audio as source:
+            recognizer.adjust_for_ambient_noise(source)
+            audio_content = recognizer.record(source)
             try:
-                audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                try:
-                    transcription = recognizer.recognize_google(audio)
-                    st.session_state['transcriptions'].append(transcription)
-                    # Update the transcription area within the scrollable container
-                    trp.markdown(r"<div class='scrollable-container'>" + "<br>".join(f"{i+1}: {t}" for i, t in enumerate(st.session_state['transcriptions'])) + r"<style> .scrollable-container {height: 400px; overflow-y: auto;}</style> </div>", unsafe_allow_html=True)
-                    current_transcription_placeholder.markdown("**Listening for more...**")
-                except sr.UnknownValueError or sr.RequestError:
-                    pass
-            except sr.WaitTimeoutError:
-                pass
-            except Exception as e:
-                pass
+                transcription = recognizer.recognize_google(audio_content)
+                st.session_state['transcriptions'].append(transcription)
+                st.success("File transcribed successfully!")
+            except sr.UnknownValueError:
+                st.error("Could not understand the audio") 
+            except sr.RequestError as e:
+                st.error(f"Could not request results; {e}")
+
+# Continuously update the transcriptions in the main thread
+while True:
+    update_transcriptions()
+    time.sleep(1)
