@@ -16,6 +16,8 @@ import speech_recognition as sr
 import numpy as np
 from pydub import AudioSegment
 
+import ffmpeg
+
 st.set_page_config(layout="wide")
 
 print("HI")
