@@ -92,7 +92,7 @@ with right_col:
         key="speech-to-text",
         mode=WebRtcMode.SENDONLY,
         audio_frame_callback=audio_frame_callback,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}),
+        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.iptel.org"]}]}),
         media_stream_constraints={"video": False, "audio": True},
     )
 
