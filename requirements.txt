@@ -4,4 +4,3 @@ asyncio==3.4.3
 openai==1.38.0
 SpeechRecognition==3.10.4
 pydub==0.25.1
-ffmpeg-python
